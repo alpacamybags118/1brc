@@ -1,11 +1,10 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"fmt"
-	"http"
+	"io"
 	"log"
-	_ "net/http/pprof"
 	"os"
 	"sort"
 	"strconv"
@@ -21,12 +20,9 @@ type LocationData struct {
 }
 
 func main() {
-	go func() {
-		fmt.Println(http.ListenAndServe("localhost:6060", nil))
-	}()
-	//file, err := os.Open("sample.txt")
 	start := time.Now()
 	file, err := os.Open("../../../../measurements.txt")
+	//file, err := os.Open("sample.txt")
 
 	if err != nil {
 		log.Fatal(err)
@@ -34,51 +30,92 @@ func main() {
 
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
-
 	cache := map[string]LocationData{}
 
 	readStart := time.Now()
-	for scanner.Scan() {
-		text := scanner.Text()
-		data := strings.Split(text, ";")
+	for {
+		buffer := make([]byte, 240000)
+		readBytes, err := file.Read(buffer)
+		if readBytes > 0 {
+			buffer = buffer[:readBytes]
+			// need to read up to the next newline to process records
+			if buffer[readBytes-1] != '\n' {
+				for {
+					charBuff := make([]byte, 1)
+					dataRead, err := file.Read(charBuff)
 
-		temp, err := strconv.ParseFloat(data[1], 32)
+					if dataRead > 0 {
+						buffer = append(buffer, charBuff...)
+					} else {
+						break
+					}
+
+					if err != nil {
+						if err != io.EOF {
+							fmt.Println(err)
+						}
+						fmt.Println("EOF")
+						break
+					}
+
+					if charBuff[0] == '\n' {
+						break
+					}
+				}
+			}
+
+			lineList := bytes.Split(buffer, []byte("\n"))
+			lineList = lineList[:len(lineList)-1]
+			// process each line into our cache
+			for _, line := range lineList {
+				data := strings.Split(string(line), ";")
+				temp, err := strconv.ParseFloat(data[1], 32)
+
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				current, exist := cache[data[0]]
+				var location LocationData
+
+				if exist {
+					location = LocationData{
+						min:   current.min,
+						sum:   current.sum + temp,
+						max:   current.max,
+						count: current.count + 1,
+					}
+
+					if current.min > temp {
+						location.min = temp
+					}
+
+					if current.max < temp {
+						location.max = temp
+					}
+				} else {
+					location = LocationData{
+						min:   temp,
+						sum:   temp,
+						max:   temp,
+						count: 1,
+					}
+				}
+
+				cache[data[0]] = location
+			}
+		}
 
 		if err != nil {
-			log.Fatal(err)
+			if err != io.EOF {
+				fmt.Println(err)
+			}
+
+			fmt.Println("EOF")
+			break
 		}
 
-		current, exist := cache[data[0]]
-		var location LocationData
-
-		if exist {
-			location = LocationData{
-				min:   current.min,
-				sum:   current.sum + temp,
-				max:   current.max,
-				count: current.count + 1,
-			}
-
-			if current.min > temp {
-				location.min = temp
-			}
-
-			if current.max < temp {
-				location.max = temp
-			}
-		} else {
-			location = LocationData{
-				min:   temp,
-				sum:   temp,
-				max:   temp,
-				count: 1,
-			}
-		}
-
-		cache[data[0]] = location
 	}
-
 	readDuration := time.Since(readStart)
 
 	fmt.Printf("read time: %v\n", readDuration.Seconds())
